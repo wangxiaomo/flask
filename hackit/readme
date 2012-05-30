@@ -1,0 +1,8 @@
+1.submodule 下的 __init__.py 不只使 submodule 为一个模块.更可以在为其下的模块提供导出.
+2.实现 flask 中的 g
+    1>__init__.py:
+        from .globals import g
+    2>globals.py:
+        from werkzeug.local import LocalStack,LocalProxy
+        # 凭借这两个实现.
+        # 利用 slots 实现的一个栈、代理模式.
