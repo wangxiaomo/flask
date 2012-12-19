@@ -18,7 +18,7 @@ assumptions are true:
     modify it, there is no magic proxy that can give you a reference to
     the application object you're currently creating or modifying.
 
-On the contrast, during request handling, a couple of other rules exist:
+In contrast, during request handling, a couple of other rules exist:
 
 -   while a request is active, the context local objects
     (:data:`flask.request` and others) point to the current request.
@@ -37,15 +37,14 @@ context local.
 Purpose of the Application Context
 ----------------------------------
 
-The main reason for the application's context existance is that in the
+The main reason for the application's context existence is that in the
 past a bunch of functionality was attached to the request context in lack
 of a better solution.  Since one of the pillar's of Flask's design is that
 you can have more than one application in the same Python process.
 
 So how does the code find the “right” application?  In the past we
 recommended passing applications around explicitly, but that caused issues
-with libraries that were not designed with that in mind for libraries for
-which it was too inconvenient to make this work.
+with libraries that were not designed with that in mind.
 
 A common workaround for that problem was to use the
 :data:`~flask.current_app` proxy later on, which was bound to the current
@@ -59,7 +58,7 @@ Creating an Application Context
 To make an application context there are two ways.  The first one is the
 implicit one: whenever a request context is pushed, an application context
 will be created alongside if this is necessary.  As a result of that, you
-can ignore the existance of the application context unless you need it.
+can ignore the existence of the application context unless you need it.
 
 The second way is the explicit way using the
 :meth:`~flask.Flask.app_context` method::
@@ -86,3 +85,47 @@ Extensions are free to store additional information on the topmost level,
 assuming they pick a sufficiently unique name.
 
 For more information about that, see :ref:`extension-dev`.
+
+Context Usage
+-------------
+
+The context is typically used to cache resources on there that need to be
+created on a per-request or usage case.  For instance database connects
+are destined to go there.  When storing things on the application context
+unique names should be chosen as this is a place that is shared between
+Flask applications and extensions.
+
+The most common usage is to split resource management into two parts:
+
+1.  an implicit resource caching on the context.
+2.  a context teardown based resource deallocation.
+
+Generally there would be a ``get_X()`` function that creates resource
+``X`` if it does not exist yet and otherwise returns the same resource,
+and a ``teardown_X()`` function that is registered as teardown handler.
+
+This is an example that connects to a database::
+
+    import sqlite3
+    from flask import _app_ctx_stack
+
+    def get_db():
+        top = _app_ctx_stack.top
+        if not hasattr(top, 'database'):
+            top.database = connect_to_database()
+        return top.database
+
+    @app.teardown_appcontext
+    def teardown_db(exception):
+        top = _app_ctx_stack.top
+        if hasattr(top, 'database'):
+            top.database.close()
+
+The first time ``get_db()`` is called the connection will be established.
+To make this implicit a :class:`~werkzeug.local.LocalProxy` can be used::
+
+    from werkzeug.local import LocalProxy
+    db = LocalProxy(get_db)
+
+That way a user can directly access ``db`` which internally calls
+``get_db()``.

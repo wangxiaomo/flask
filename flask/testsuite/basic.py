@@ -13,6 +13,7 @@ from __future__ import with_statement
 
 import re
 import flask
+import pickle
 import unittest
 from datetime import datetime
 from threading import Thread
@@ -297,6 +298,31 @@ class BasicFunctionalityTestCase(FlaskTestCase):
         self.assert_equal(c.get('/').data, 'None')
         self.assert_equal(c.get('/').data, '42')
 
+    def test_session_special_types(self):
+        app = flask.Flask(__name__)
+        app.secret_key = 'development-key'
+        app.testing = True
+        now = datetime.utcnow().replace(microsecond=0)
+
+        @app.after_request
+        def modify_session(response):
+            flask.session['m'] = flask.Markup('Hello!')
+            flask.session['dt'] = now
+            flask.session['t'] = (1, 2, 3)
+            return response
+
+        @app.route('/')
+        def dump_session_contents():
+            return pickle.dumps(dict(flask.session))
+
+        c = app.test_client()
+        c.get('/')
+        rv = pickle.loads(c.get('/').data)
+        self.assert_equal(rv['m'], flask.Markup('Hello!'))
+        self.assert_equal(type(rv['m']), flask.Markup)
+        self.assert_equal(rv['dt'], now)
+        self.assert_equal(rv['t'], (1, 2, 3))
+
     def test_flashes(self):
         app = flask.Flask(__name__)
         app.secret_key = 'testkey'
@@ -361,7 +387,7 @@ class BasicFunctionalityTestCase(FlaskTestCase):
             return ''
 
         @app.route('/test_filters_without_returning_categories/')
-        def test_filters():
+        def test_filters2():
             messages = flask.get_flashed_messages(category_filter=['message', 'warning'])
             self.assert_equal(len(messages), 2)
             self.assert_equal(messages[0], u'Hello World')
@@ -953,6 +979,29 @@ class BasicFunctionalityTestCase(FlaskTestCase):
         self.assert_equal(c.get('/de/').data, '/de/about')
         self.assert_equal(c.get('/de/about').data, '/foo')
         self.assert_equal(c.get('/foo').data, '/en/about')
+        
+    def test_inject_blueprint_url_defaults(self):
+        app = flask.Flask(__name__)
+        bp = flask.Blueprint('foo.bar.baz', __name__, 
+                       template_folder='template')
+
+        @bp.url_defaults
+        def bp_defaults(endpoint, values):
+            values['page'] = 'login'
+        @bp.route('/<page>')
+        def view(page): pass
+
+        app.register_blueprint(bp)
+
+        values = dict()
+        app.inject_url_defaults('foo.bar.baz.view', values)
+        expected = dict(page='login')
+        self.assert_equal(values, expected) 
+
+        with app.test_request_context('/somepage'):
+            url = flask.url_for('foo.bar.baz.view')
+        expected = '/login'
+        self.assert_equal(url, expected)
 
     def test_debug_mode_complains_after_first_request(self):
         app = flask.Flask(__name__)

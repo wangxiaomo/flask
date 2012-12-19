@@ -73,28 +73,24 @@ class JSONTestCase(FlaskTestCase):
         @app.route('/dict')
         def return_dict():
             return flask.jsonify(d)
-        @app.route("/unpadded")
-        def return_padded_false():
-            return flask.jsonify(d, padded=False)
-        @app.route("/padded")
-        def return_padded_true():
-            return flask.jsonify(d, padded=True)
-        @app.route("/padded_custom")
-        def return_padded_json_custom_callback():
-            return flask.jsonify(d, padded='my_func_name')
         c = app.test_client()
-        for url in '/kw', '/dict', '/unpadded':
+        for url in '/kw', '/dict':
             rv = c.get(url)
             self.assert_equal(rv.mimetype, 'application/json')
             self.assert_equal(flask.json.loads(rv.data), d)
-        for get_arg in 'callback=funcName', 'jsonp=funcName':
-            rv = c.get('/padded?' + get_arg)
-            self.assert_( rv.data.startswith("funcName(") )
-            self.assert_( rv.data.endswith(")") )
-            rv_json = rv.data.split('(')[1].split(')')[0]
-            self.assert_equal(flask.json.loads(rv_json), d)
-        rv = c.get('/padded_custom?my_func_name=funcName')
-        self.assert_( rv.data.startswith("funcName(") )
+
+    def test_json_as_unicode(self):
+        app = flask.Flask(__name__)
+
+        app.config['JSON_AS_ASCII'] = True
+        with app.app_context():
+            rv = flask.json.dumps(u'\N{SNOWMAN}')
+            self.assert_equal(rv, '"\\u2603"')
+
+        app.config['JSON_AS_ASCII'] = False
+        with app.app_context():
+            rv = flask.json.dumps(u'\N{SNOWMAN}')
+            self.assert_equal(rv, u'"\u2603"')
 
     def test_json_attr(self):
         app = flask.Flask(__name__)
@@ -114,6 +110,38 @@ class JSONTestCase(FlaskTestCase):
             self.assert_equal(rv, '"<\\/script>"')
             rv = render('{{ "<\0/script>"|tojson|safe }}')
             self.assert_equal(rv, '"<\\u0000\\/script>"')
+            rv = render('{{ "<!--<script>"|tojson|safe }}')
+            self.assert_equal(rv, '"<\\u0021--<script>"')
+
+    def test_json_customization(self):
+        class X(object):
+            def __init__(self, val):
+                self.val = val
+        class MyEncoder(flask.json.JSONEncoder):
+            def default(self, o):
+                if isinstance(o, X):
+                    return '<%d>' % o.val
+                return flask.json.JSONEncoder.default(self, o)
+        class MyDecoder(flask.json.JSONDecoder):
+            def __init__(self, *args, **kwargs):
+                kwargs.setdefault('object_hook', self.object_hook)
+                flask.json.JSONDecoder.__init__(self, *args, **kwargs)
+            def object_hook(self, obj):
+                if len(obj) == 1 and '_foo' in obj:
+                    return X(obj['_foo'])
+                return obj
+        app = flask.Flask(__name__)
+        app.testing = True
+        app.json_encoder = MyEncoder
+        app.json_decoder = MyDecoder
+        @app.route('/', methods=['POST'])
+        def index():
+            return flask.json.dumps(flask.request.json['x'])
+        c = app.test_client()
+        rv = c.post('/', data=flask.json.dumps({
+            'x': {'_foo': 42}
+        }), content_type='application/json')
+        self.assertEqual(rv.data, '"<42>"')
 
     def test_modified_url_encoding(self):
         class ModifiedRequest(flask.Request):
@@ -414,6 +442,64 @@ class NoImportsTestCase(FlaskTestCase):
             self.fail('Flask(import_name) is importing import_name.')
 
 
+class StreamingTestCase(FlaskTestCase):
+
+    def test_streaming_with_context(self):
+        app = flask.Flask(__name__)
+        app.testing = True
+        @app.route('/')
+        def index():
+            def generate():
+                yield 'Hello '
+                yield flask.request.args['name']
+                yield '!'
+            return flask.Response(flask.stream_with_context(generate()))
+        c = app.test_client()
+        rv = c.get('/?name=World')
+        self.assertEqual(rv.data, 'Hello World!')
+
+    def test_streaming_with_context_as_decorator(self):
+        app = flask.Flask(__name__)
+        app.testing = True
+        @app.route('/')
+        def index():
+            @flask.stream_with_context
+            def generate():
+                yield 'Hello '
+                yield flask.request.args['name']
+                yield '!'
+            return flask.Response(generate())
+        c = app.test_client()
+        rv = c.get('/?name=World')
+        self.assertEqual(rv.data, 'Hello World!')
+
+    def test_streaming_with_context_and_custom_close(self):
+        app = flask.Flask(__name__)
+        app.testing = True
+        called = []
+        class Wrapper(object):
+            def __init__(self, gen):
+                self._gen = gen
+            def __iter__(self):
+                return self
+            def close(self):
+                called.append(42)
+            def next(self):
+                return self._gen.next()
+        @app.route('/')
+        def index():
+            def generate():
+                yield 'Hello '
+                yield flask.request.args['name']
+                yield '!'
+            return flask.Response(flask.stream_with_context(
+                Wrapper(generate())))
+        c = app.test_client()
+        rv = c.get('/?name=World')
+        self.assertEqual(rv.data, 'Hello World!')
+        self.assertEqual(called, [42])
+
+
 def suite():
     suite = unittest.TestSuite()
     if flask.json_available:
@@ -421,4 +507,5 @@ def suite():
     suite.addTest(unittest.makeSuite(SendfileTestCase))
     suite.addTest(unittest.makeSuite(LoggingTestCase))
     suite.addTest(unittest.makeSuite(NoImportsTestCase))
+    suite.addTest(unittest.makeSuite(StreamingTestCase))
     return suite

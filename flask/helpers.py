@@ -21,22 +21,7 @@ from zlib import adler32
 from threading import RLock
 from werkzeug.routing import BuildError
 from werkzeug.urls import url_quote
-
-# try to load the best simplejson implementation available.  If JSON
-# is not installed, we add a failing class.
-json_available = True
-json = None
-try:
-    import simplejson as json
-except ImportError:
-    try:
-        import json
-    except ImportError:
-        try:
-            # Google Appengine offers simplejson via django
-            from django.utils import simplejson as json
-        except ImportError:
-            json_available = False
+from functools import update_wrapper
 
 
 from werkzeug.datastructures import Headers
@@ -52,24 +37,6 @@ from jinja2 import FileSystemLoader
 
 from .globals import session, _request_ctx_stack, _app_ctx_stack, \
      current_app, request
-
-
-def _assert_have_json():
-    """Helper function that fails if JSON is unavailable."""
-    if not json_available:
-        raise RuntimeError('simplejson not installed')
-
-
-# figure out if simplejson escapes slashes.  This behavior was changed
-# from one version to another without reason.
-if not json_available or '\\/' not in json.dumps('/'):
-
-    def _tojson_filter(*args, **kwargs):
-        if __debug__:
-            _assert_have_json()
-        return json.dumps(*args, **kwargs).replace('/', '\\/')
-else:
-    _tojson_filter = json.dumps
 
 
 # sentinel
@@ -92,59 +59,76 @@ def _endpoint_from_view_func(view_func):
     return view_func.__name__
 
 
-def jsonify(*args, **kwargs):
-    """Creates a :class:`~flask.Response` with the JSON representation of
-    the given arguments with an `application/json` mimetype.  The arguments
-    to this function are the same as to the :class:`dict` constructor.
+def stream_with_context(generator_or_function):
+    """Request contexts disappear when the response is started on the server.
+    This is done for efficiency reasons and to make it less likely to encounter
+    memory leaks with badly written WSGI middlewares.  The downside is that if
+    you are using streamed responses, the generator cannot access request bound
+    information any more.
 
-    Example usage::
+    This function however can help you keep the context around for longer::
 
-        @app.route('/_get_current_user')
-        def get_current_user():
-            return jsonify(username=g.user.username,
-                           email=g.user.email,
-                           id=g.user.id)
+        from flask import stream_with_context, request, Response
 
-    This will send a JSON response like this to the browser::
+        @app.route('/stream')
+        def streamed_response():
+            @stream_with_context
+            def generate():
+                yield 'Hello '
+                yield request.args['name']
+                yield '!'
+            return Response(generate())
 
-        {
-            "username": "admin",
-            "email": "admin@localhost",
-            "id": 42
-        }
+    Alternatively it can also be used around a specific generator::
 
-    This requires Python 2.6 or an installed version of simplejson.  For
-    security reasons only objects are supported toplevel.  For more
-    information about this, have a look at :ref:`json-security`.
+        from flask import stream_with_context, request, Response
 
-    .. versionadded:: 0.2
+        @app.route('/stream')
+        def streamed_response():
+            def generate():
+                yield 'Hello '
+                yield request.args['name']
+                yield '!'
+            return Response(stream_with_context(generate()))
 
     .. versionadded:: 0.9
-        If the ``padded`` argument is true, the JSON object will be padded
-        for JSONP calls and the response mimetype will be changed to
-        ``application/javascript``. By default, the request arguments ``callback``
-        and ``jsonp`` will be used as the name for the callback function.
-        This will work with jQuery and most other JavaScript libraries
-        by default.
-
-        If the ``padded`` argument is a string, jsonify will look for
-        the request argument with the same name and use that value as the
-        callback-function name.
     """
-    if __debug__:
-        _assert_have_json()
-    if 'padded' in kwargs:
-        if isinstance(kwargs['padded'], str):
-            callback = request.args.get(kwargs['padded']) or 'jsonp'
-        else:
-            callback = request.args.get('callback') or \
-                       request.args.get('jsonp') or 'jsonp'
-        del kwargs['padded']
-        json_str = json.dumps(dict(*args, **kwargs), indent=None)
-        content = str(callback) + "(" + json_str + ")"
-        return current_app.response_class(content, mimetype='application/javascript')
-    return current_app.response_class(json.dumps(dict(*args, **kwargs),
-        indent=None if request.is_xhr else 2), mimetype='application/json')
+    try:
+        gen = iter(generator_or_function)
+    except TypeError:
+        def decorator(*args, **kwargs):
+            gen = generator_or_function()
+            return stream_with_context(gen)
+        return update_wrapper(decorator, generator_or_function)
+
+    def generator():
+        ctx = _request_ctx_stack.top
+        if ctx is None:
+            raise RuntimeError('Attempted to stream with context but '
+                'there was no context in the first place to keep around.')
+        with ctx:
+            # Dummy sentinel.  Has to be inside the context block or we're
+            # not actually keeping the context around.
+            yield None
+
+            # The try/finally is here so that if someone passes a WSGI level
+            # iterator in we're still running the cleanup logic.  Generators
+            # don't need that because they are closed on their destruction
+            # automatically.
+            try:
+                for item in gen:
+                    yield item
+            finally:
+                if hasattr(gen, 'close'):
+                    gen.close()
+
+    # The trick is to start the generator.  Then the code execution runs until
+    # the first dummy None is yielded at which point the context was already
+    # pushed.  This item is discarded.  Then when the iteration continues the
+    # real generator is executed.
+    wrapped_g = generator()
+    wrapped_g.next()
+    return wrapped_g
 
 
 def make_response(*args):
@@ -254,7 +238,9 @@ def url_for(endpoint, **values):
 
     :param endpoint: the endpoint of the URL (name of the function)
     :param values: the variable arguments of the URL rule
-    :param _external: if set to `True`, an absolute URL is generated.
+    :param _external: if set to `True`, an absolute URL is generated. Server
+      address can be changed via `SERVER_NAME` configuration variable which
+      defaults to `localhost`.
     :param _anchor: if provided this is added as anchor to the URL.
     :param _method: if provided this explicitly specifies an HTTP method.
     """
@@ -309,8 +295,6 @@ def url_for(endpoint, **values):
         values['_method'] = method
         return appctx.app.handle_url_build_error(error, endpoint, values)
 
-    rv = url_adapter.build(endpoint, values, method=method,
-                           force_external=external)
     if anchor is not None:
         rv += '#' + url_quote(anchor)
     return rv
@@ -511,6 +495,7 @@ def send_file(filename_or_fp, mimetype=None, as_attachment=False,
         if file is not None:
             file.close()
         headers['X-Sendfile'] = filename
+        headers['Content-Length'] = os.path.getsize(filename)
         data = None
     else:
         if file is None:
@@ -529,7 +514,7 @@ def send_file(filename_or_fp, mimetype=None, as_attachment=False,
     rv.cache_control.public = True
     if cache_timeout is None:
         cache_timeout = current_app.get_send_file_max_age(filename)
-    if cache_timeout:
+    if cache_timeout is not None:
         rv.cache_control.max_age = cache_timeout
         rv.expires = int(time() + cache_timeout)
 
@@ -538,7 +523,7 @@ def send_file(filename_or_fp, mimetype=None, as_attachment=False,
             os.path.getmtime(filename),
             os.path.getsize(filename),
             adler32(
-                filename.encode('utf8') if isinstance(filename, unicode)
+                filename.encode('utf-8') if isinstance(filename, unicode)
                 else filename
             ) & 0xffffffff
         ))
@@ -571,7 +556,9 @@ def safe_join(directory, filename):
     for sep in _os_alt_seps:
         if sep in filename:
             raise NotFound()
-    if os.path.isabs(filename) or filename.startswith('../'):
+    if os.path.isabs(filename) or \
+       filename == '..' or \
+       filename.startswith('../'):
         raise NotFound()
     return os.path.join(directory, filename)
 
@@ -616,17 +603,29 @@ def get_root_path(import_name):
 
     Not to be confused with the package path returned by :func:`find_package`.
     """
+    # Module already imported and has a file attribute.  Use that first.
+    mod = sys.modules.get(import_name)
+    if mod is not None and hasattr(mod, '__file__'):
+        return os.path.dirname(os.path.abspath(mod.__file__))
+
+    # Next attempt: check the loader.
     loader = pkgutil.get_loader(import_name)
+
+    # Loader does not exist or we're referring to an unloaded main module
+    # or a main module without path (interactive sessions), go with the
+    # current working directory.
     if loader is None or import_name == '__main__':
-        # import name is not found, or interactive/main module
         return os.getcwd()
+
     # For .egg, zipimporter does not have get_filename until Python 2.7.
+    # Some other loaders might exhibit the same behavior.
     if hasattr(loader, 'get_filename'):
         filepath = loader.get_filename(import_name)
     else:
         # Fall back to imports.
         __import__(import_name)
         filepath = sys.modules[import_name].__file__
+
     # filepath is import_name.py for a module, or __init__.py for a package.
     return os.path.dirname(os.path.abspath(filepath))
 

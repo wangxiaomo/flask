@@ -3,10 +3,42 @@ Flask Changelog
 
 Here you can see the full list of changes between each Flask release.
 
+Version 0.10
+------------
+
+Release date to be decided.
+
+- Changed default cookie serialization format from pickle to JSON to
+  limit the impact an attacker can do if the secret key leaks.  See
+  :ref:`upgrading-to-010` for more information.
+- Added ``template_test`` methods in addition to the already existing
+  ``template_filter`` method family.
+- Set the content-length header for x-sendfile.
+- ``tojson`` filter now does not escape script blocks in HTML5 parsers.
+- Flask will now raise an error if you attempt to register a new function
+  on an already used endpoint.
+- Added wrapper module around simplejson and added default serialization
+  of datetime objects.  This allows much easier customization of how
+  JSON is handled by Flask or any Flask extension.
+- Removed deprecated internal ``flask.session`` module alias.  Use
+  ``flask.sessions`` instead to get the session module.  This is not to
+  be confused with ``flask.session`` the session proxy.
+- Templates can now be rendered without request context.  The behavior is
+  slightly different as the ``request``, ``session`` and ``g`` objects
+  will not be available and blueprint's context processors are not
+  called.
+- The config object is now available to the template as a real global and
+  not through a context processor which makes it available even in imported
+  templates by default.
+- Added an option to generate non-ascii encoded JSON which should result
+  in less bytes being transmitted over the network.  It's disabled by
+  default to not cause confusion with existing libraries that might expect
+  ``flask.json.dumps`` to return bytestrings by default.
+
 Version 0.9
 -----------
 
-Relase date to be decided, codename to be chosen.
+Released on July 1st 2012, codename Campari.
 
 - The :func:`flask.Request.on_json_loading_failed` now returns a JSON formatted
   response by default.
@@ -71,11 +103,13 @@ Relase date to be decided, codename to be chosen.
 - Added `required_methods` attribute to view functions to force-add methods
   on registration.
 - Added :func:`flask.after_this_request`.
+- Added :func:`flask.stream_with_context` and the ability to push contexts
+  multiple times without producing unexpected behavior.
 
 Version 0.8.1
 -------------
 
-Bugfix release, release date to be decided
+Bugfix release, released on July 1st 2012
 
 - Fixed an issue with the undocumented `flask.session` module to not
   work properly on Python 2.5.  It should not be used but did cause

@@ -95,14 +95,12 @@ Set yourapplication.fcgi::
     from yourapplication import app
 
     class ScriptNameStripper(object):
-       to_strip = '/yourapplication.fcgi'
-
        def __init__(self, app):
            self.app = app
 
        def __call__(self, environ, start_response):
            environ['SCRIPT_NAME'] = ''
-       return self.app(environ, start_response)
+           return self.app(environ, start_response)
 
     app = ScriptNameStripper(app)
 
@@ -128,7 +126,7 @@ A basic FastCGI configuration for lighttpd looks like that::
     )
 
     url.rewrite-once = (
-        "^(/static.*)$" => "$1",
+        "^(/static($|/.*))$" => "$1",
         "^(/.*)$" => "/yourapplication.fcgi$1"
 
 Remember to enable the FastCGI, alias and rewrite modules. This configuration

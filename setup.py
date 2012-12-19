@@ -77,7 +77,7 @@ class run_audit(Command):
 
 setup(
     name='Flask',
-    version='0.9-dev',
+    version='0.10-dev',
     url='http://github.com/mitsuhiko/flask/',
     license='BSD',
     author='Armin Ronacher',
@@ -91,7 +91,8 @@ setup(
     platforms='any',
     install_requires=[
         'Werkzeug>=0.7',
-        'Jinja2>=2.4'
+        'Jinja2>=2.4',
+        'itsdangerous>=0.17'
     ],
     classifiers=[
         'Development Status :: 4 - Beta',

@@ -377,7 +377,7 @@ package it's actually inside your package:
             /hello.html
 
 For templates you can use the full power of Jinja2 templates.  Head over
-to the the official `Jinja2 Template Documentation
+to the official `Jinja2 Template Documentation
 <http://jinja.pocoo.org/2/documentation/templates>`_ for more information.
 
 Here is an example template:
@@ -514,8 +514,9 @@ attributes mentioned above::
                 return log_the_user_in(request.form['username'])
             else:
                 error = 'Invalid username/password'
-        # this is executed if the request method was GET or the
-        # credentials were invalid
+        # the code below this is executed if the request method
+        # was GET or the credentials were invalid
+        return render_template('login.html', error=error)
 
 What happens if the key does not exist in the `form` attribute?  In that
 case a special :exc:`KeyError` is raised.  You can catch it like a
@@ -626,9 +627,9 @@ For this also see :ref:`about-responses`.
 Redirects and Errors
 --------------------
 
-To redirect a user to somewhere else you can use the
-:func:`~flask.redirect` function. To abort a request early with an error
-code use the :func:`~flask.abort` function.  Here an example how this works::
+To redirect a user to another endpoint, use the :func:`~flask.redirect`
+function; to abort a request early with an error code, use the
+:func:`~flask.abort` function::
 
     from flask import abort, redirect, url_for
 
