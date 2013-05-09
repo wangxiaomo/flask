@@ -28,8 +28,8 @@ from .helpers import _PackageBoundObject, url_for, get_flashed_messages, \
 from . import json
 from .wrappers import Request, Response
 from .config import ConfigAttribute, Config
-from .ctx import RequestContext, AppContext, _RequestGlobals
-from .globals import _request_ctx_stack, request
+from .ctx import RequestContext, AppContext, _AppCtxGlobals
+from .globals import _request_ctx_stack, request, session, g
 from .sessions import SecureCookieSessionInterface
 from .module import blueprint_is_module
 from .templating import DispatchingJinjaLoader, Environment, \
@@ -157,8 +157,24 @@ class Flask(_PackageBoundObject):
     #: 3. Return None instead of AttributeError on expected attributes.
     #: 4. Raise exception if an unexpected attr is set, a "controlled" flask.g.
     #:
-    #: .. versionadded:: 0.9
-    request_globals_class = _RequestGlobals
+    #: In Flask 0.9 this property was called `request_globals_class` but it
+    #: was changed in 0.10 to :attr:`app_ctx_globals_class` because the
+    #: flask.g object is not application context scoped.
+    #:
+    #: .. versionadded:: 0.10
+    app_ctx_globals_class = _AppCtxGlobals
+
+    # Backwards compatibility support
+    def _get_request_globals_class(self):
+        return self.app_ctx_globals_class
+    def _set_request_globals_class(self, value):
+        from warnings import warn
+        warn(DeprecationWarning('request_globals_class attribute is now '
+                                'called app_ctx_globals_class'))
+        self.app_ctx_globals_class = value
+    request_globals_class = property(_get_request_globals_class,
+                                     _set_request_globals_class)
+    del _get_request_globals_class, _set_request_globals_class
 
     #: The debug flag.  Set this to `True` to enable debugging of the
     #: application.  In debug mode the debugger will kick in when an unhandled
@@ -647,7 +663,13 @@ class Flask(_PackageBoundObject):
         rv.globals.update(
             url_for=url_for,
             get_flashed_messages=get_flashed_messages,
-            config=self.config
+            config=self.config,
+            # request, session and g are normally added with the
+            # context processor for efficiency reasons but for imported
+            # templates we also want the proxies in there.
+            request=request,
+            session=session,
+            g=g
         )
         rv.filters['tojson'] = json.htmlsafe_dumps
         return rv
@@ -1144,6 +1166,38 @@ class Flask(_PackageBoundObject):
 
 
     @setupmethod
+    def template_global(self, name=None):
+        """A decorator that is used to register a custom template global function.
+        You can specify a name for the global function, otherwise the function
+        name will be used. Example::
+
+        @app.template_global()
+        def double(n):
+            return 2 * n
+
+        .. versionadded:: 0.10
+
+        :param name: the optional name of the global function, otherwise the
+        function name will be used.
+        """
+        def decorator(f):
+            self.add_template_global(f, name=name)
+            return f
+        return decorator
+
+    @setupmethod
+    def add_template_global(self, f, name=None):
+        """Register a custom template global function. Works exactly like the
+        :meth:`template_global` decorator.
+
+        .. versionadded:: 0.10
+
+        :param name: the optional name of the global function, otherwise the
+        function name will be used.
+        """
+        self.jinja_env.globals[name or f.__name__] = f
+
+    @setupmethod
     def before_request(self, f):
         """Registers a function to run before each request."""
         self.before_request_funcs.setdefault(None, []).append(f)
@@ -1196,6 +1250,13 @@ class Flask(_PackageBoundObject):
 
         When a teardown function was called because of a exception it will
         be passed an error object.
+
+        .. admonition:: Debug Note
+
+           In debug mode Flask will not tear down a request on an exception
+           immediately.  Instead if will keep it alive so that the interactive
+           debugger can still access it.  This behavior can be controlled
+           by the ``PRESERVE_CONTEXT_ON_EXCEPTION`` configuration variable.
         """
         self.teardown_request_funcs.setdefault(None, []).append(f)
         return f
@@ -1261,6 +1322,10 @@ class Flask(_PackageBoundObject):
         .. versionadded:: 0.3
         """
         handlers = self.error_handler_spec.get(request.blueprint)
+        # Proxy exceptions don't have error codes.  We want to always return
+        # those unchanged as errors
+        if e.code is None:
+            return e
         if handlers and e.code in handlers:
             handler = handlers[e.code]
         else:

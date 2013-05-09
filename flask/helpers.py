@@ -35,6 +35,7 @@ except ImportError:
 
 from jinja2 import FileSystemLoader
 
+from .signals import message_flashed
 from .globals import session, _request_ctx_stack, _app_ctx_stack, \
      current_app, request
 
@@ -229,6 +230,9 @@ def url_for(endpoint, **values):
     that this is for building URLs outside the current application, and not for
     handling 404 NotFound errors.
 
+    .. versionadded:: 0.10
+       The `_scheme` parameter was added.
+
     .. versionadded:: 0.9
        The `_anchor` and `_method` parameters were added.
 
@@ -241,14 +245,17 @@ def url_for(endpoint, **values):
     :param _external: if set to `True`, an absolute URL is generated. Server
       address can be changed via `SERVER_NAME` configuration variable which
       defaults to `localhost`.
+    :param _scheme: a string specifying the desired URL scheme. The `_external`
+      parameter must be set to `True` or a `ValueError` is raised.
     :param _anchor: if provided this is added as anchor to the URL.
     :param _method: if provided this explicitly specifies an HTTP method.
     """
     appctx = _app_ctx_stack.top
     reqctx = _request_ctx_stack.top
     if appctx is None:
-        raise RuntimeError('Attempted to generate a URL with the application '
-                           'context being pushed.  This has to be executed ')
+        raise RuntimeError('Attempted to generate a URL without the '
+                           'application context being pushed. This has to be '
+                           'executed when application context is available.')
 
     # If request specific information is available we have some extra
     # features that support "relative" urls.
@@ -283,7 +290,14 @@ def url_for(endpoint, **values):
 
     anchor = values.pop('_anchor', None)
     method = values.pop('_method', None)
+    scheme = values.pop('_scheme', None)
     appctx.app.inject_url_defaults(endpoint, values)
+
+    if scheme is not None:
+        if not external:
+            raise ValueError('When specifying _scheme, _external must be True')
+        url_adapter.url_scheme = scheme
+
     try:
         rv = url_adapter.build(endpoint, values, method=method,
                                force_external=external)
@@ -348,6 +362,8 @@ def flash(message, category='message'):
     flashes = session.get('_flashes', [])
     flashes.append((category, message))
     session['_flashes'] = flashes
+    message_flashed.send(current_app._get_current_object(),
+                         message=message, category=category)
 
 
 def get_flashed_messages(with_categories=False, category_filter=[]):

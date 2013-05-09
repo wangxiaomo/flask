@@ -190,6 +190,22 @@ class BasicFunctionalityTestCase(FlaskTestCase):
         self.assert_('domain=.example.com' in rv.headers['set-cookie'].lower())
         self.assert_('httponly' in rv.headers['set-cookie'].lower())
 
+    def test_session_using_server_name_port_and_path(self):
+        app = flask.Flask(__name__)
+        app.config.update(
+            SECRET_KEY='foo',
+            SERVER_NAME='example.com:8080',
+            APPLICATION_ROOT='/foo'
+        )
+        @app.route('/')
+        def index():
+            flask.session['testing'] = 42
+            return 'Hello World'
+        rv = app.test_client().get('/', 'http://example.com:8080/foo')
+        self.assert_('domain=example.com' in rv.headers['set-cookie'].lower())
+        self.assert_('path=/foo' in rv.headers['set-cookie'].lower())
+        self.assert_('httponly' in rv.headers['set-cookie'].lower())
+
     def test_session_using_application_root(self):
         class PrefixPathMiddleware(object):
             def __init__(self, app, prefix):
@@ -1104,8 +1120,11 @@ class BasicFunctionalityTestCase(FlaskTestCase):
                 c.get('/fail')
 
         self.assert_(flask._request_ctx_stack.top is not None)
-        flask._request_ctx_stack.pop()
+        self.assert_(flask._app_ctx_stack.top is not None)
+        # implicit appctx disappears too
+        flask._request_ctx_stack.top.pop()
         self.assert_(flask._request_ctx_stack.top is None)
+        self.assert_(flask._app_ctx_stack.top is None)
 
 
 class ContextTestCase(FlaskTestCase):
